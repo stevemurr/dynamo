@@ -3008,4 +3008,130 @@ mod parallel_jail_tests {
             "Should have no tool calls for empty array"
         );
     }
+
+    /// Test that finish_reason chunks are preserved when content is still being jailed.
+    ///
+    /// This test demonstrates a bug where finish_reason chunks are filtered out
+    /// when a choice is currently jailed (content is being accumulated), causing
+    /// the finish_reason to be lost and potentially affecting usage chunk emission.
+    ///
+    /// The bug is in jail.rs lines 560-563 where the condition:
+    /// ```
+    /// let should_emit = choice.delta.role.is_some()
+    ///     || choice.delta.tool_calls.is_some()
+    ///     || !was_ever_jailed;
+    /// ```
+    ///
+    /// Filters out finish_reason chunks when:
+    /// - The choice was jailed (was_ever_jailed = true, meaning is_jailed or accumulated_content not empty)
+    /// - The chunk has no role (role = None)
+    /// - The chunk has no tool_calls (tool_calls = None)
+    ///
+    /// This causes the finish_reason chunk to be dropped.
+    #[tokio::test]
+    async fn test_finish_reason_preserved_after_tool_jailing() {
+        // Simulate a stream where:
+        // 1. Tool call marker starts jailing
+        // 2. Tool call content is being accumulated (jail is ACTIVE)
+        // 3. A finish_reason chunk arrives BEFORE the jail ends
+        // 4. The finish_reason chunk should still be emitted
+        //
+        // This simulates a scenario where the model sends finish_reason
+        // while the jail is still processing incomplete tool call content.
+
+        let chunks = vec![
+            // Content that starts jailing (hermes parser start token)
+            test_utils::create_mock_response_chunk("<tool_call>".to_string(), 0),
+            // Incomplete tool call content - jail is now ACTIVE and accumulating
+            test_utils::create_mock_response_chunk("{\"name\": \"get_weather\"".to_string(), 0),
+            // Final chunk with finish_reason arrives WHILE jail is still active
+            // (tool call is incomplete - no </tool_call> marker yet)
+            // This is the chunk that gets filtered out by the bug
+            test_utils::create_final_response_chunk(0),
+            // Usage chunk with empty choices
+            {
+                let response = NvCreateChatCompletionStreamResponse {
+                    id: "test-id".to_string(),
+                    choices: vec![], // Empty choices for usage-only chunk
+                    created: 1234567890,
+                    model: "test-model".to_string(),
+                    system_fingerprint: Some("test-fingerprint".to_string()),
+                    object: "chat.completion.chunk".to_string(),
+                    usage: Some(CompletionUsage {
+                        prompt_tokens: 10,
+                        completion_tokens: 5,
+                        total_tokens: 15,
+                        prompt_tokens_details: None,
+                        completion_tokens_details: None,
+                    }),
+                    service_tier: None,
+                    nvext: None,
+                };
+                Annotated {
+                    data: Some(response),
+                    id: None,
+                    event: None,
+                    comment: None,
+                }
+            },
+        ];
+
+        let input_stream = stream::iter(chunks);
+
+        // Create JailedStream with Hermes parser (uses <tool_call> markers)
+        // Don't set tool_call_parser to avoid auto-configuration, manually set jail sequences
+        let jail = JailedStream::builder()
+            .jail_start_sequence("<tool_call>")
+            .jail_end_sequence("</tool_call>")
+            .build();
+
+        let results: Vec<_> = jail.apply_with_finish_reason(input_stream).collect().await;
+
+        // Check that we have a finish_reason chunk
+        let has_finish_reason = results.iter().any(|r| {
+            r.data.as_ref().map_or(false, |d| {
+                d.choices.iter().any(|c| c.finish_reason.is_some())
+            })
+        });
+
+        assert!(
+            has_finish_reason,
+            "finish_reason chunk should be preserved even when jail is active. \
+             The jail should not filter out chunks with finish_reason even when \
+             the choice is currently being jailed or was previously jailed."
+        );
+
+        // Check that we have the usage chunk (empty choices with usage data)
+        let has_usage_chunk = results.iter().any(|r| {
+            r.data.as_ref().map_or(false, |d| {
+                d.choices.is_empty() && d.usage.is_some()
+            })
+        });
+
+        assert!(
+            has_usage_chunk,
+            "Usage chunk should be preserved. Got {} results: {:?}",
+            results.len(),
+            results.iter().map(|r| {
+                r.data.as_ref().map(|d| format!(
+                    "choices={}, usage={:?}, finish_reason={:?}",
+                    d.choices.len(),
+                    d.usage.is_some(),
+                    d.choices.first().and_then(|c| c.finish_reason)
+                ))
+            }).collect::<Vec<_>>()
+        );
+
+        // Verify the usage chunk has correct values
+        let usage_chunk = results.iter().find(|r| {
+            r.data.as_ref().map_or(false, |d| {
+                d.choices.is_empty() && d.usage.is_some()
+            })
+        }).expect("Should have usage chunk");
+
+        let usage = usage_chunk.data.as_ref().unwrap().usage.as_ref().unwrap();
+        assert_eq!(usage.prompt_tokens, 10);
+        assert_eq!(usage.completion_tokens, 5);
+        assert_eq!(usage.total_tokens, 15);
+    }
 }
