@@ -559,6 +559,7 @@ impl JailedStream {
 
                             let should_emit = choice.delta.role.is_some()
                                 || choice.delta.tool_calls.is_some()
+                                || choice.finish_reason.is_some() // Always emit finish_reason chunks
                                 || !was_ever_jailed; // Always pass through if never jailed
 
                             if should_emit {
