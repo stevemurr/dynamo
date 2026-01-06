@@ -27,6 +27,7 @@ from tensorrt_llm.executor.result import GenerationResult
 from tensorrt_llm.executor.utils import RequestError
 from tensorrt_llm.llmapi import DisaggregatedParams as LlmDisaggregatedParams
 from tensorrt_llm.llmapi.llm import SamplingParams
+from tensorrt_llm.sampling_params import GuidedDecodingParams
 
 from dynamo._core import Context
 from dynamo.logits_processing.examples import HelloWorldLogitsProcessor
@@ -307,7 +308,17 @@ class HandlerBase:
         for key, value in request["sampling_options"].items():
             if not value:
                 continue
-            if hasattr(sampling_params, key):
+            if key == "guided_decoding" and isinstance(value, dict):
+                # Convert dict to GuidedDecodingParams object
+                # Map Dynamo's field names to TensorRT-LLM's GuidedDecodingParams
+                guided_params = GuidedDecodingParams(
+                    json=value.get("json"),
+                    regex=value.get("regex"),
+                    grammar=value.get("grammar"),
+                    json_object=False,  # Dynamo uses json schema, not simple json_object mode
+                )
+                sampling_params.guided_decoding = guided_params
+            elif hasattr(sampling_params, key):
                 setattr(sampling_params, key, value)
 
         # Additional sampling params in output options
