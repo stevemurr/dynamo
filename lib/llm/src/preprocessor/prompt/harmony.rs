@@ -22,7 +22,7 @@ fn get_encoding() -> Result<&'static HarmonyEncoding> {
         load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss)
             .map_err(|e| e.to_string())
     });
-    
+
     match result {
         Ok(enc) => Ok(enc),
         Err(e) => Err(anyhow::anyhow!("Failed to load Harmony encoding: {}", e)),
@@ -50,23 +50,23 @@ impl super::OAIPromptFormatter for HarmonyFormatter {
 
     fn render(&self, req: &dyn super::OAIChatLikeRequest) -> Result<String> {
         let enc = get_encoding()?;
-        
+
         // Convert OpenAI messages to Harmony messages
         let messages = convert_openai_to_harmony(req)?;
-        
+
         // Create conversation from messages
         let conversation = Conversation::from_messages(messages);
-        
+
         // Render to tokens for completion (appends assistant role)
         let tokens = enc.render_conversation_for_completion(&conversation, Role::Assistant, None)
             .context("Failed to render conversation to Harmony tokens")?;
-        
+
         // Decode tokens back to string for the tokenizer using decode_utf8
         let prompt = enc.tokenizer().decode_utf8(&tokens)
             .context("Failed to decode Harmony tokens to string")?;
-        
+
         tracing::debug!("Harmony formatted prompt length: {} chars", prompt.len());
-        
+
         Ok(prompt)
     }
 }
@@ -79,20 +79,20 @@ fn convert_openai_to_harmony(req: &dyn super::OAIChatLikeRequest) -> Result<Vec<
     let messages_array = messages_json
         .as_array()
         .context("Messages is not an array")?;
-    
+
     // Get tools if available for the developer message
     let tools = req.tools();
     let tools_array = tools
         .as_ref()
         .and_then(|t| serde_json::to_value(t).ok())
         .and_then(|v| v.as_array().cloned());
-    
+
     let mut harmony_messages = Vec::with_capacity(messages_array.len());
-    
+
     // Track tool call mappings: tool_call_id -> function_name
     // We need this to properly name tool result messages
     let mut tool_call_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    
+
     // First pass: collect tool call mappings from assistant messages
     for msg in messages_array {
         if let Some(tool_calls) = msg.get("tool_calls").and_then(|t| t.as_array()) {
@@ -106,11 +106,36 @@ fn convert_openai_to_harmony(req: &dyn super::OAIChatLikeRequest) -> Result<Vec<
             }
         }
     }
-    
+
+    // Per Harmony spec, tools belong in the developer message.
+    // If tools are present but no developer message exists, we must create one.
+    // This ensures the harmony library detects tools and adds proper instructions
+    // for the model to use the functions namespace (e.g., "to=functions.tool_name").
+    // Reference: https://cookbook.openai.com/articles/openai-harmony
+    let has_developer_message = messages_array
+        .iter()
+        .any(|msg| msg.get("role").and_then(|r| r.as_str()) == Some("developer"));
+
+    let needs_developer_message_for_tools = tools_array.is_some() && !has_developer_message;
+    let mut developer_message_inserted = false;
+
     // Second pass: convert messages
     for msg in messages_array {
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
-        
+
+        // Insert developer message with tools after system message if needed
+        // This must happen before processing non-system messages to maintain correct order
+        if needs_developer_message_for_tools && !developer_message_inserted && role != "system" {
+            if let Some(ref tools) = tools_array {
+                if let Some(tool_namespace) = build_tool_namespace(tools) {
+                    let dev_content = DeveloperContent::new().with_tools(tool_namespace);
+                    harmony_messages.push(Message::from_role_and_content(Role::Developer, dev_content));
+                    developer_message_inserted = true;
+                    tracing::debug!("Inserted developer message with {} tools", tools.len());
+                }
+            }
+        }
+
         let harmony_msg = match role {
             "system" => {
                 let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
@@ -122,7 +147,7 @@ fn convert_openai_to_harmony(req: &dyn super::OAIChatLikeRequest) -> Result<Vec<
                 };
                 Message::from_role_and_content(Role::System, sys_content)
             },
-            
+
             "developer" => {
                 let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
                 let mut dev_content = DeveloperContent::new();
@@ -137,65 +162,65 @@ fn convert_openai_to_harmony(req: &dyn super::OAIChatLikeRequest) -> Result<Vec<
                 }
                 Message::from_role_and_content(Role::Developer, dev_content)
             },
-            
+
             "user" => {
                 let content = get_message_content(msg);
                 Message::from_role_and_content(Role::User, content.as_str())
             },
-            
+
             "assistant" => {
                 let content = get_message_content(msg);
-                
+
                 // Check for tool calls
                 if let Some(tool_calls) = msg.get("tool_calls").and_then(|t| t.as_array()) {
                     if !tool_calls.is_empty() {
                         // For assistant messages with tool calls, we need to render them
                         // in the commentary channel with the function recipient
                         let mut messages_for_tool_calls = Vec::new();
-                        
+
                         // First, if there's regular content, add it
                         if !content.is_empty() {
                             messages_for_tool_calls.push(
                                 Message::from_role_and_content(Role::Assistant, content.as_str())
                             );
                         }
-                        
+
                         // Then add each tool call as a separate message in commentary channel
                         for tool_call in tool_calls {
                             if let Some(function) = tool_call.get("function") {
                                 let name = function.get("name").and_then(|n| n.as_str()).unwrap_or("");
                                 let arguments = function.get("arguments").and_then(|a| a.as_str()).unwrap_or("{}");
-                                
+
                                 let tool_msg = Message::from_role_and_content(Role::Assistant, arguments)
                                     .with_channel("commentary")
                                     .with_recipient(&format!("functions.{}", name))
                                     .with_content_type("json");
-                                
+
                                 messages_for_tool_calls.push(tool_msg);
                             }
                         }
-                        
+
                         // Add all messages and continue to next
                         harmony_messages.extend(messages_for_tool_calls);
                         continue;
                     }
                 }
-                
+
                 // Regular assistant message without tool calls
                 Message::from_role_and_content(Role::Assistant, content.as_str())
             },
-            
+
             "tool" => {
                 // This is the critical fix - tool results need special Harmony formatting
                 let content = get_message_content(msg);
                 let tool_call_id = msg.get("tool_call_id").and_then(|t| t.as_str()).unwrap_or("");
-                
+
                 // Look up the function name from our mapping
                 let func_name = tool_call_map
                     .get(tool_call_id)
                     .cloned()
                     .unwrap_or_else(|| extract_function_name_from_id(tool_call_id));
-                
+
                 // Create tool message with proper author name and routing
                 // Format: <|start|>functions.{name} to=assistant<|channel|>commentary<|message|>{content}<|end|>
                 let author = Author::new(Role::Tool, format!("functions.{}", func_name));
@@ -203,16 +228,16 @@ fn convert_openai_to_harmony(req: &dyn super::OAIChatLikeRequest) -> Result<Vec<
                     .with_channel("commentary")
                     .with_recipient("assistant")
             },
-            
+
             _ => {
                 tracing::warn!("Unknown message role '{}', skipping", role);
                 continue;
             }
         };
-        
+
         harmony_messages.push(harmony_msg);
     }
-    
+
     Ok(harmony_messages)
 }
 
@@ -246,11 +271,11 @@ fn build_tool_namespace(tools: &[JsonValue]) -> Option<ToolNamespaceConfig> {
             let name = function.get("name")?.as_str()?;
             let description = function.get("description").and_then(|d| d.as_str()).unwrap_or("");
             let parameters = function.get("parameters").cloned();
-            
+
             Some(ToolDescription::new(name, description, parameters))
         })
         .collect();
-    
+
     if tool_descriptions.is_empty() {
         None
     } else {
@@ -312,7 +337,7 @@ mod tests {
                 }
             }
         })];
-        
+
         let namespace = build_tool_namespace(&tools);
         assert!(namespace.is_some());
     }
