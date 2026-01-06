@@ -169,6 +169,15 @@ impl ReasoningParser for GptOssReasoningParser {
         text: &str,
         token_ids: &[u32],
     ) -> ParserResult {
+        // DEBUG: Log entry with input text (truncated for readability)
+        let text_preview: String = text.chars().take(100).collect();
+        tracing::debug!(
+            "[STREAM_DEBUG] Entry: text_len={}, text_preview={:?}, provided_token_ids={}",
+            text.len(),
+            text_preview,
+            token_ids.len()
+        );
+
         let token_ids = if token_ids.is_empty() {
             // WAR: Since we are moving to just text based reasoning parsing, converting to token_ids now using harmony encoding
             let encoded_tokens = match encode_text_to_tokens(text) {
@@ -183,26 +192,66 @@ impl ReasoningParser for GptOssReasoningParser {
             token_ids
         };
 
+        // DEBUG: Log the full token sequence for this chunk
+        tracing::debug!(
+            "[STREAM_DEBUG] Processing {} tokens: {:?}",
+            token_ids.len(),
+            token_ids
+        );
+
+        // DEBUG: Decode tokens to text for human-readable logging
+        if let Ok(enc) = get_harmony_encoding() {
+            let decoded = enc.tokenizer().decode_utf8(token_ids).unwrap_or_default();
+            tracing::debug!("[STREAM_DEBUG] Decoded token text: {:?}", decoded);
+        }
+
         let parser: &mut StreamableParser = &mut self.parser;
         let mut normal_delta = String::new();
         let mut reasoning_delta = String::new();
 
+        // DEBUG: Log parser state before processing
+        let initial_channel = parser.current_channel();
+        tracing::debug!(
+            "[STREAM_DEBUG] Initial parser state: channel={:?}, accumulated_tokens={}, state={:?}",
+            initial_channel,
+            parser.tokens().len(),
+            parser.state_json()
+        );
+
         for (i, token_id) in token_ids.iter().enumerate() {
-            tracing::debug!(
-                "Processing streaming token {} of {}: {}",
-                i + 1,
-                token_ids.len(),
-                token_id
-            );
+            // DEBUG: Decode individual token for logging
+            let token_text = if let Ok(enc) = get_harmony_encoding() {
+                enc.tokenizer()
+                    .decode_utf8(&[*token_id])
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+
+            let channel_before = parser.current_channel();
+
             if let Err(e) = parser.process(*token_id) {
                 tracing::warn!("Harmony parse error for token_id {token_id}: {e}");
                 return ParserResult::default();
             }
 
-            if let (Some(delta), Some(channel)) = (
-                parser.last_content_delta().unwrap_or_default(),
-                parser.current_channel(),
-            ) {
+            let channel_after = parser.current_channel();
+            let delta = parser.last_content_delta().unwrap_or_default();
+
+            // DEBUG: Log each token with full context
+            tracing::debug!(
+                "[STREAM_DEBUG] Token {}/{}: id={}, text={:?}, channel: {:?} -> {:?}, delta={:?}, state={:?}",
+                i + 1,
+                token_ids.len(),
+                token_id,
+                token_text,
+                channel_before,
+                channel_after,
+                delta,
+                parser.state_json()
+            );
+
+            if let (Some(delta), Some(channel)) = (delta, channel_after.as_ref()) {
                 // `last_content_delta` only exposes the newest token slice, so we forward
                 // `final`/`analysis` chunks immediately; commentary is reconstructed in the
                 // fallback path below because it needs the stripped metadata.
@@ -217,7 +266,7 @@ impl ReasoningParser for GptOssReasoningParser {
 
         if !normal_delta.is_empty() || !reasoning_delta.is_empty() {
             tracing::debug!(
-                "Returning aggregated deltas: normal: {} chars, reasoning: {} chars",
+                "[STREAM_DEBUG] Returning aggregated deltas: normal={} chars, reasoning={} chars",
                 normal_delta.len(),
                 reasoning_delta.len()
             );
@@ -226,6 +275,14 @@ impl ReasoningParser for GptOssReasoningParser {
                 reasoning_text: reasoning_delta,
             };
         }
+
+        // DEBUG: We're in the fallback path - no deltas accumulated
+        tracing::debug!(
+            "[STREAM_DEBUG] No deltas accumulated, checking fallback paths. channel={:?}, total_tokens={}, state={:?}",
+            parser.current_channel(),
+            parser.tokens().len(),
+            parser.state_json()
+        );
 
         if let Some(channel) = parser.current_channel() {
             if channel == "commentary" {
@@ -289,7 +346,7 @@ impl ReasoningParser for GptOssReasoningParser {
                 let current_content = parser.current_content().unwrap_or_default();
                 if !current_content.is_empty() {
                     tracing::debug!(
-                        "Returning accumulated content from channel: {} ({} chars)",
+                        "[STREAM_DEBUG] Returning accumulated content from channel: {} ({} chars)",
                         channel,
                         current_content.len()
                     );
@@ -308,15 +365,31 @@ impl ReasoningParser for GptOssReasoningParser {
                 }
                 // Truly empty - this is fine, just debug log (e.g., processing control tokens)
                 tracing::debug!(
-                    "No content in channel: {} (likely control token processing)",
-                    channel
+                    "[STREAM_DEBUG] No content in channel: {} (likely control token processing), state={:?}",
+                    channel,
+                    parser.state_json()
                 );
             } else {
                 // Unexpected channel - this might indicate a problem
-                tracing::warn!("Unexpected channel with no delta content: {}", channel);
+                // DEBUG: Log full token history when warning fires
+                let all_tokens = parser.tokens();
+                let decoded_history = if let Ok(enc) = get_harmony_encoding() {
+                    enc.tokenizer().decode_utf8(all_tokens).unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                tracing::warn!(
+                    "[STREAM_DEBUG] WARNING: Unexpected channel with no delta content. \
+                    channel={}, total_tokens={}, tokens={:?}, decoded={:?}, state={:?}",
+                    channel,
+                    all_tokens.len(),
+                    all_tokens,
+                    decoded_history,
+                    parser.state_json()
+                );
             }
         }
-        tracing::debug!("No deltas to return, returning empty result");
+        tracing::debug!("[STREAM_DEBUG] No deltas to return, returning empty result");
         ParserResult::default()
     }
 }
