@@ -27,6 +27,7 @@ from tensorrt_llm.executor.result import GenerationResult
 from tensorrt_llm.executor.utils import RequestError
 from tensorrt_llm.llmapi import DisaggregatedParams as LlmDisaggregatedParams
 from tensorrt_llm.llmapi.llm import SamplingParams
+from tensorrt_llm.sampling_params import GuidedDecodingParams
 
 from dynamo._core import Context
 from dynamo.logits_processing.examples import HelloWorldLogitsProcessor
@@ -72,6 +73,9 @@ class RequestHandlerConfig:
         DistributedRuntime
     ] = None  # DistributedRuntime reference for graceful shutdown
     metrics_collector: Optional[Any] = None  # TensorRT-LLM MetricsCollector
+    max_seq_len: Optional[
+        int
+    ] = None  # Model's maximum sequence length for dynamic max_tokens default
     kv_block_size: int = 32
 
 
@@ -93,6 +97,7 @@ class HandlerBase:
         self.connector = config.connector
         # Store runtime reference for graceful shutdown
         self.runtime = config.runtime
+        self.max_seq_len = config.max_seq_len
         self.kv_block_size: int = config.kv_block_size
 
     def check_error(self, result: dict):
@@ -307,7 +312,17 @@ class HandlerBase:
         for key, value in request["sampling_options"].items():
             if not value:
                 continue
-            if hasattr(sampling_params, key):
+            if key == "guided_decoding" and isinstance(value, dict):
+                # Convert dict to GuidedDecodingParams object
+                # Map Dynamo's field names to TensorRT-LLM's GuidedDecodingParams
+                guided_params = GuidedDecodingParams(
+                    json=value.get("json"),
+                    regex=value.get("regex"),
+                    grammar=value.get("grammar"),
+                    json_object=False,  # Dynamo uses json schema, not simple json_object mode
+                )
+                sampling_params.guided_decoding = guided_params
+            elif hasattr(sampling_params, key):
                 setattr(sampling_params, key, value)
 
         # Additional sampling params in output options
@@ -331,8 +346,19 @@ class HandlerBase:
                     )
 
         max_tokens = request["stop_conditions"]["max_tokens"]
-        if max_tokens:
+        if max_tokens is not None:
             sampling_params.max_tokens = max_tokens
+        elif self.max_seq_len is not None:
+            # Dynamic default: use remaining context window when max_tokens not specified
+            # This mirrors the fix applied to the vLLM backend in PR #4156
+            token_ids = request.get("token_ids", [])
+            input_length = len(token_ids)
+            dynamic_default = max(1, self.max_seq_len - input_length)
+            sampling_params.max_tokens = dynamic_default
+            logging.debug(
+                f"Using dynamic default max_tokens={dynamic_default} "
+                f"(max_seq_len={self.max_seq_len}, input_length={input_length})"
+            )
 
         ignore_eos = request["stop_conditions"].get("ignore_eos")
         if ignore_eos:

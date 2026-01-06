@@ -147,6 +147,7 @@ toktrie = { version = "1.1" }
 toktrie_hf_tokenizers = { version = "1.1" }
 
 # preprocessor
+openai-harmony = "0.0.3"
 bs62 = { version = "0.1" }
 erased-serde = { version = "0.4" }
 itertools = { version = "0.14.0" }
