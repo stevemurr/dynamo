@@ -1,0 +1,54 @@
+[TEST] 2026-01-04T04:17:03 INFO NatsServer: Running command: nats-server -js --trace --store_dir /tmp/nats_bzjmgkn6 -p 4284 in /workspace
+[TEST] 2026-01-04T04:17:03 INFO NatsServer: Checking Port: 4284
+[TEST] 2026-01-04T04:17:03 INFO NatsServer: SUCCESS: Check Port: 4284
+[TEST] 2026-01-04T04:17:03 INFO EtcdServer: Running command: etcd --listen-client-urls http://0.0.0.0:2429 --advertise-client-urls http://0.0.0.0:2429 --listen-peer-urls http://0.0.0.0:2430 --initial-advertise-peer-urls http://localhost:2430 --initial-cluster default=http://localhost:2430 --data-dir /tmp/etcd_pfsepyfe in /workspace
+[TEST] 2026-01-04T04:17:03 INFO EtcdServer: Checking Port: 2429
+[TEST] 2026-01-04T04:17:03 INFO EtcdServer: SUCCESS: Check Port: 2429
+[TEST] 2026-01-04T04:17:03 INFO tests.router.test_router_e2e_with_mockers: Starting disaggregated router prefix reuse test (registration_order=prefill_first, bootstrap=True)
+[TEST] 2026-01-04T04:17:03 INFO tests.router.test_router_e2e_with_mockers: Starting 4 prefill mocker instances (first)
+[TEST] 2026-01-04T04:17:03 INFO tests.router.test_router_e2e_with_mockers: Allocated bootstrap ports [9150, 9151, 9152, 9153] for 4 prefill workers
+[TEST] 2026-01-04T04:17:03 INFO tests.router.test_router_e2e_with_mockers: Created prefill mocker process with 4 worker(s), endpoint: dyn://test-namespace-rbqnpcloqg.prefill.generate
+[TEST] 2026-01-04T04:17:03 INFO tests.router.test_router_e2e_with_mockers: Starting prefill mocker process with 4 worker(s)
+[TEST] 2026-01-04T04:17:03 INFO ManagedProcess: Running command: python -m dynamo.mocker --model-path Qwen/Qwen3-0.6B --endpoint dyn://test-namespace-rbqnpcloqg.prefill.generate --store-kv etcd --num-workers 4 --is-prefill-worker --speedup-ratio 10.0 --block-size 16 --bootstrap-ports 9150,9151,9152,9153 in /workspace
+[TEST] 2026-01-04T04:17:03 INFO tests.router.test_router_e2e_with_mockers: Prefill workers using endpoint: dyn://test-namespace-rbqnpcloqg.prefill.generate
+[TEST] 2026-01-04T04:17:03 INFO tests.router.test_router_e2e_with_mockers: Starting 4 decode mocker instances (second)
+[TEST] 2026-01-04T04:17:03 INFO tests.router.test_router_e2e_with_mockers: Created decode mocker process with 4 worker(s), endpoint: dyn://test-namespace-rbqnpcloqg.backend.generate
+[TEST] 2026-01-04T04:17:03 INFO tests.router.test_router_e2e_with_mockers: Starting decode mocker process with 4 worker(s)
+[TEST] 2026-01-04T04:17:03 INFO ManagedProcess: Running command: python -m dynamo.mocker --model-path Qwen/Qwen3-0.6B --endpoint dyn://test-namespace-rbqnpcloqg.backend.generate --store-kv etcd --num-workers 4 --is-decode-worker --speedup-ratio 10.0 --block-size 16 in /workspace
+[TEST] 2026-01-04T04:17:03 INFO tests.router.test_router_e2e_with_mockers: Decode workers using endpoint: dyn://test-namespace-rbqnpcloqg.backend.generate
+[TEST] 2026-01-04T04:17:03 INFO tests.router.common: Starting KV router frontend on port 9164 for disagg test
+[TEST] 2026-01-04T04:17:03 INFO KVRouterProcess: Running command: python3 -m dynamo.frontend --kv-cache-block-size 16 --router-mode kv --http-port 9164 --store-kv etcd --namespace test-namespace-rbqnpcloqg --enforce-disagg in /workspace
+[TEST] 2026-01-04T04:17:03 INFO KVRouterProcess: Checking Port: 9164
+[TEST] 2026-01-04T04:17:03 INFO KVRouterProcess: SUCCESS: Check Port: 9164
+[TEST] 2026-01-04T04:17:03 INFO KVRouterProcess: Checking URL http://localhost:9164/v1/models
+[TEST] 2026-01-04T04:17:03 INFO KVRouterProcess: SUCCESS: Check URL: http://localhost:9164/v1/models (attempt=1, elapsed=0.0s)
+Response:
+{
+  "object": "list",
+  "data": []
+}
+[TEST] 2026-01-04T04:17:03 INFO tests.router.common: Waiting for prefill and decode workers to register with frontend...
+[TEST] 2026-01-04T04:17:03 INFO tests.router.common: Waiting for 4 workers to register on HTTP frontend (timeout=120s)...
+[TEST] 2026-01-04T04:17:04 INFO tests.router.common: Workers registered. Found 1 model(s): ['Qwen/Qwen3-0.6B']
+[TEST] 2026-01-04T04:17:04 INFO tests.router.common: Waiting for chat completions pipeline to be built...
+[TEST] 2026-01-04T04:18:00 INFO KVRouterProcess: Terminating process group: 197
+[TEST] 2026-01-04T04:18:05 INFO KVRouterProcess: Terminating PID: 197 name: python3
+[TEST] 2026-01-04T04:18:05 INFO KVRouterProcess: Terminating PID: 199 name: tee
+[TEST] 2026-01-04T04:18:05 INFO KVRouterProcess: Terminating PID: 198 name: sed
+[TEST] 2026-01-04T04:18:05 INFO tests.router.test_router_e2e_with_mockers: Stopping decode mocker process
+[TEST] 2026-01-04T04:18:05 INFO ManagedProcess: Terminating process group: 194
+[TEST] 2026-01-04T04:18:10 INFO ManagedProcess: Terminating PID: 194 name: python
+[TEST] 2026-01-04T04:18:10 INFO ManagedProcess: Terminating PID: 196 name: tee
+[TEST] 2026-01-04T04:18:10 INFO ManagedProcess: Terminating PID: 195 name: sed
+[TEST] 2026-01-04T04:18:10 INFO tests.router.test_router_e2e_with_mockers: Stopping prefill mocker process
+[TEST] 2026-01-04T04:18:10 INFO ManagedProcess: Terminating process group: 191
+[TEST] 2026-01-04T04:18:15 INFO ManagedProcess: Terminating PID: 191 name: python
+[TEST] 2026-01-04T04:18:15 INFO ManagedProcess: Terminating PID: 193 name: tee
+[TEST] 2026-01-04T04:18:15 INFO ManagedProcess: Terminating PID: 192 name: sed
+[TEST] 2026-01-04T04:18:15 INFO tests.router.test_router_e2e_with_mockers: Deallocated bootstrap ports [9150, 9151, 9152, 9153]
+[TEST] 2026-01-04T04:18:16 INFO EtcdServer: Terminating process group: 181
+[TEST] 2026-01-04T04:18:21 INFO EtcdServer: Terminating PID: 181 name: etcd
+[TEST] 2026-01-04T04:18:21 INFO EtcdServer: Terminating PID: 182 name: sed
+[TEST] 2026-01-04T04:18:21 INFO NatsServer: Terminating process group: 170
+[TEST] 2026-01-04T04:18:26 INFO NatsServer: Terminating PID: 170 name: nats-server
+[TEST] 2026-01-04T04:18:26 INFO NatsServer: Terminating PID: 171 name: sed
