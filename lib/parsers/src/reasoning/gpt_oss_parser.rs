@@ -282,8 +282,38 @@ impl ReasoningParser for GptOssReasoningParser {
                         reasoning_text: String::new(),
                     };
                 }
+            } else if channel == "final" || channel == "analysis" {
+                // No delta but we're in a content channel - this can happen when processing
+                // control tokens (like <|end|>, <|start|>) that change parser state but don't
+                // produce new content deltas. Check if there's accumulated content to return.
+                let current_content = parser.current_content().unwrap_or_default();
+                if !current_content.is_empty() {
+                    tracing::debug!(
+                        "Returning accumulated content from channel: {} ({} chars)",
+                        channel,
+                        current_content.len()
+                    );
+                    return ParserResult {
+                        normal_text: if channel == "final" {
+                            current_content.clone()
+                        } else {
+                            String::new()
+                        },
+                        reasoning_text: if channel == "analysis" {
+                            current_content
+                        } else {
+                            String::new()
+                        },
+                    };
+                }
+                // Truly empty - this is fine, just debug log (e.g., processing control tokens)
+                tracing::debug!(
+                    "No content in channel: {} (likely control token processing)",
+                    channel
+                );
             } else {
-                tracing::warn!("Shouldn't be delta content after in channel: {}", channel);
+                // Unexpected channel - this might indicate a problem
+                tracing::warn!("Unexpected channel with no delta content: {}", channel);
             }
         }
         tracing::debug!("No deltas to return, returning empty result");
@@ -425,5 +455,68 @@ mod tests {
                 "<|channel|>commentary to=functions.get_system_health <|constrain|>json<|message|>"
             );
         }
+    }
+
+    /// Test that content is not dropped when processing control tokens (like <|end|>)
+    /// after content has been accumulated. This tests the fix for the "Shouldn't be delta
+    /// content after in channel" warning that was causing content to be dropped.
+    #[test]
+    fn test_gpt_oss_no_content_drop_on_control_tokens() {
+        let text = "<|channel|>final<|message|>The capital of Brazil is Brasília.<|end|>";
+        let enc = get_harmony_encoding()
+            .as_ref()
+            .expect("Failed to get encoding");
+        let token_ids = enc.tokenizer().encode_with_special_tokens(text);
+
+        let mut parser = GptOssReasoningParser::new().expect("Failed to create parser");
+        let mut normal_text_incr = String::new();
+        let mut reasoning_text_incr = String::new();
+
+        // Process tokens one by one to simulate streaming
+        for token in token_ids.iter() {
+            let result = parser.parse_reasoning_streaming_incremental("", &[*token]);
+            normal_text_incr.push_str(&result.normal_text);
+            reasoning_text_incr.push_str(&result.reasoning_text);
+        }
+
+        // The final content should not be dropped when <|end|> is processed
+        assert!(
+            normal_text_incr.contains("Brasília"),
+            "Content should not be dropped: got '{}'",
+            normal_text_incr
+        );
+    }
+
+    /// Test that analysis channel content is preserved across control token boundaries
+    #[test]
+    fn test_gpt_oss_analysis_content_preserved() {
+        let text = "<|channel|>analysis<|message|>Thinking about the question...<|end|><|start|>assistant<|channel|>final<|message|>Here is my answer.";
+        let enc = get_harmony_encoding()
+            .as_ref()
+            .expect("Failed to get encoding");
+        let token_ids = enc.tokenizer().encode_with_special_tokens(text);
+
+        let mut parser = GptOssReasoningParser::new().expect("Failed to create parser");
+        let mut normal_text_incr = String::new();
+        let mut reasoning_text_incr = String::new();
+
+        // Process tokens one by one
+        for token in token_ids.iter() {
+            let result = parser.parse_reasoning_streaming_incremental("", &[*token]);
+            normal_text_incr.push_str(&result.normal_text);
+            reasoning_text_incr.push_str(&result.reasoning_text);
+        }
+
+        // Both reasoning and normal text should be captured
+        assert!(
+            reasoning_text_incr.contains("Thinking about the question"),
+            "Reasoning content should be captured: got '{}'",
+            reasoning_text_incr
+        );
+        assert!(
+            normal_text_incr.contains("Here is my answer"),
+            "Final content should be captured: got '{}'",
+            normal_text_incr
+        );
     }
 }
