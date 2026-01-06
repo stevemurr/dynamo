@@ -30,6 +30,12 @@ impl PromptFormatter {
             )));
         }
 
+        // GPT-OSS models use Harmony format for proper tool calling support
+        if name_lower.contains("gpt-oss") || name_lower.contains("gpt oss") {
+            tracing::info!("Detected GPT-OSS model, using Harmony formatter for tool calling");
+            return Ok(Self::OAI(Arc::new(super::harmony::HarmonyFormatter::new())));
+        }
+
         match mdc
             .prompt_formatter
             .as_ref()
